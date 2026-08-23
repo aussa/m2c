@@ -872,6 +872,7 @@ class Sh2Arch(Arch):
         "cmp/gt": lambda a: BinaryOp.scmp(a.reg(1), ">", a.reg(0)),
         "cmp/hi": lambda a: BinaryOp.ucmp(a.reg(1), ">", a.reg(0)),
         "cmp/hs": lambda a: BinaryOp.ucmp(a.reg(1), ">=", a.reg(0)),
+        "cmp/str": lambda a: fn_op("M2C_CMP_STR", [a.reg(1), a.reg(0)], Type.boolean()),
         "tst": lambda a: (
             BinaryOp.icmp(a.reg(1), "==", Literal(0))
             if a.reg_ref(1) == a.raw_arg(0)

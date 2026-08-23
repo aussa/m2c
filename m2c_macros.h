@@ -63,4 +63,6 @@ typedef s64 M2C_UNK64;
 #define M2C_STORE_GBR(a)
 #define M2C_STORE_VBR(a)
 
+#define M2C_CMP_STR(a, b) (0)
+
 #endif
