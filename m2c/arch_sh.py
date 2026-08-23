@@ -912,6 +912,23 @@ class Sh2Arch(Arch):
             "|",
             BinaryOp.ushift(a.reg(0), ">>", Literal(16)),
         ),
+        "swap.b": lambda a: BinaryOp.uint(
+            BinaryOp.uint(
+                BinaryOp.int(a.reg(0), "&", Literal(0xFFFF0000)),
+                "|",
+                BinaryOp.int(
+                    BinaryOp.int(a.reg(0), "&", Literal(0xFF)),
+                    "<<",
+                    Literal(8),
+                ),
+            ),
+            "|",
+            BinaryOp.int(
+                BinaryOp.ushift(a.reg(0), ">>", Literal(8)),
+                "&",
+                Literal(0xFF),
+            ),
+        ),
         "shar16.fictive": lambda a: fold_shift_right(a.reg(0), 16, signed=True),
     }
 
