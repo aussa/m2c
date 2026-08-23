@@ -893,6 +893,11 @@ class Sh2Arch(Arch):
         "and": lambda a: BinaryOp.int(a.reg(1), "&", a.reg_or_imm(0)),
         "or": lambda a: handle_or(a.reg(1), a.reg_or_imm(0)),
         "xor": lambda a: handle_xor(a.reg(1), a.reg_or_imm(0)),
+        "xtrct": lambda a: BinaryOp.uint(
+            BinaryOp.ushift(a.reg(1), ">>", Literal(16)),
+            "|",
+            BinaryOp.int(a.reg(0), "<<", Literal(16)),
+        ),
     }
 
     instrs_source_dest: InstrMap = {
