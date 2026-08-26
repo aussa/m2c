@@ -447,8 +447,12 @@ class StackInfo:
 
     def saved_reg_symbol(self, reg_name: str) -> GlobalSymbol:
         sym_name = "saved_reg_" + reg_name
-        type = self.unique_type_for("saved_reg", sym_name, Type.any_reg())
-        return GlobalSymbol(c_symbol_name=sym_name, type=type)
+        if sym_name not in self.global_info.global_symbol_map:
+            self.global_info.global_symbol_map[sym_name] = GlobalSymbol(
+                c_symbol_name=sym_name,
+                type=self.unique_type_for("saved_reg", sym_name, Type.any_reg()),
+            )
+        return self.global_info.global_symbol_map[sym_name]
 
     def should_save(self, expr: Expression, offset: Optional[int]) -> bool:
         expr = early_unwrap(expr)
