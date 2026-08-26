@@ -1,12 +1,12 @@
-extern ? a;
-extern ? b;
+extern s8 a;
+extern s8 b;
 
 void test(s32 arg0, s32 arg1) {
-    ? *var_v0;
-    ? *var_v1;
     s32 temp_v0;
     s32 var_a0;
     s32 var_a1;
+    s8 *var_v0;
+    s8 *var_v1;
 
     var_a0 = arg0;
     var_a1 = arg1;

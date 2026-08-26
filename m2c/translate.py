@@ -2218,6 +2218,24 @@ class StoreStmt(Statement):
         ) or isinstance(dest, (ArrayAccess, LocalVar, SubroutineArg)):
             # Known destination; fine to elide some casts.
             source = elide_literal_casts(source)
+        # `*ptr = M2C_FIELD(...)` stores a loaded pointer into a plain int slot
+        # whose type was never resolved (`*arg1 = M2C_FIELD(arg0, T **, off)`).
+        # cast the source to the slot's size so the emitted code compiles.
+        src_inner = source.expr if isinstance(source, Cast) else source
+        src_inner = late_unwrap(src_inner)
+        if (
+            isinstance(src_inner, StructAccess)
+            and src_inner.offset != 0
+            and src_inner.field_path is None
+            and isinstance(dest, StructAccess)
+            and dest.offset == 0
+            and dest.field_path in (None, [0])
+            and dest.struct_var.type.is_pointer()
+        ):
+            size = dest.target_size or 4
+            source = Cast(
+                source, Type.int_of_size(size * 8), reinterpret=True, silent=False
+            )
         return format_assignment(dest, source, fmt)
 
 
@@ -2927,13 +2945,14 @@ def var_for_expr(expr: Expression) -> Optional[Var]:
 
 
 def parenthesize_for_struct_access(expr: Expression, fmt: Formatter) -> str:
-    # Nested dereferences may need to be parenthesized. All other
-    # expressions will already have adequate parentheses added to them.
+    # Nested dereferences and casts may need to be parenthesized, since
+    # postfix operators like `->`, `.` and `[]` bind tighter than a cast.
     s = expr.format(fmt)
     if (
         s.startswith("*")
         or s.startswith("&")
-        or (isinstance(expr, Cast) and expr.needed_for_store())
+        or isinstance(expr, Cast)
+        or (isinstance(expr, Literal) and expr.type.is_pointer())
     ):
         return f"({s})"
     return s

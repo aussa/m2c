@@ -9,5 +9,5 @@ s32 test(s32 arg0, s32 arg1, s32 arg2) {
     temp_r10 = arg0 * 4;
     sp14 = $$21;
     sp18 = (u16) $$21;
-    return globalArray[arg0] + (((s8) *(&sp14 + arg0) * *(arg1 + temp_r10)) + (arg2 + temp_r10)->unk4);
+    return globalArray[arg0] + (((s8) *(&sp14 + arg0) * *(s32 *) (arg1 + temp_r10)) + (arg2 + temp_r10)->unk4);
 }

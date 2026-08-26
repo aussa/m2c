@@ -49,6 +49,7 @@ from .translate import (
     TernaryOp,
     UnalignedLoad,
     UnaryOp,
+    PassedInArg,
     as_intish,
     as_intptr,
     as_sintish,
@@ -123,7 +124,8 @@ def deref(
             var = base
             uw_var = early_unwrap(var)
 
-    var.type.unify(Type.ptr())
+    if not isinstance(early_unwrap(var), Literal):
+        var.type.unify(Type.ptr())
     stack_info.record_struct_access(var, offset)
     type: Type = stack_info.unique_type_for("struct", (uw_var, offset), Type.any())
 
@@ -145,6 +147,28 @@ def deref(
         type = field_type
     else:
         field_path = None
+
+    uw_var = early_unwrap(var)
+    if size in (1, 2, 4, 8) and var.type.get_pointer_target() is None:
+        if isinstance(uw_var, Literal):
+            var = Cast(
+                expr=replace(var, type=Type.intish()),
+                type=Type.ptr(Type.int_of_size(size * 8)),
+                reinterpret=True,
+                silent=False,
+            )
+        elif (
+            isinstance(uw_var, BinaryOp)
+            and offset == 0
+            and not uw_var.left.type.is_pointer_or_array()
+            and not uw_var.right.type.is_pointer_or_array()
+        ):
+            var = Cast(
+                expr=var,
+                type=Type.ptr(Type.int_of_size(size * 8)),
+                reinterpret=True,
+                silent=False,
+            )
 
     return StructAccess(
         struct_var=var,
@@ -469,6 +493,8 @@ def add_imm(
                     return BinaryOp(
                         left=source, op="+", right=as_intish(imm), type=source.type
                     )
+        if source.type.get_pointer_target() is None:
+            source = as_type(source, Type.ptr(Type.s8()), silent=False)
         return BinaryOp(left=source, op="+", right=as_intish(imm), type=Type.ptr())
     elif isinstance(source, Literal) and isinstance(imm, Literal):
         return Literal(source.value + imm.value)
@@ -1065,6 +1091,42 @@ def fold_shift_right(expr: Expression, shift: int, *, signed: bool) -> Expressio
     return fold_divmod(ret)
 
 
+def is_scaled_index(expr: Expression) -> bool:
+    uw = early_unwrap(expr)
+    return (
+        isinstance(uw, BinaryOp)
+        and uw.op in ("*", "<<")
+        and isinstance(uw.right, Literal)
+    )
+
+
+def is_pointer_like(expr: Expression) -> bool:
+    uw = early_unwrap(expr)
+    return isinstance(uw, (StructAccess, GlobalSymbol, Cast, AddressOf))
+
+
+def is_register_value(expr: Expression) -> bool:
+    uw = early_unwrap(expr)
+    return isinstance(uw, (PassedInArg, LocalVar))
+
+
+def infer_array_element_type(scale: int, stack_info: StackInfo) -> Optional[Type]:
+    if scale == 1:
+        return Type.int_of_size(8)
+    if scale == 2:
+        return Type.int_of_size(16)
+    if scale == 4:
+        return Type.reg32(likely_float=False)
+    typepool = stack_info.global_info.typepool
+    struct_name = f"_struct_unk_0x{scale:X}"
+    struct = typepool.get_struct_by_tag_name(
+        struct_name, stack_info.global_info.typemap
+    )
+    if struct is None:
+        struct = StructDeclaration.unknown(typepool, size=scale, tag_name=struct_name)
+    return Type.struct(struct)
+
+
 def array_access_from_add(
     expr: Expression,
     offset: int,
@@ -1083,6 +1145,18 @@ def array_access_from_add(
     addend = expr.right
     if addend.type.is_pointer_or_array() and not base.type.is_pointer_or_array():
         base, addend = addend, base
+    elif (
+        not base.type.is_pointer_or_array()
+        and not addend.type.is_pointer_or_array()
+        and target_size is not None
+    ):
+        base_is_index = is_scaled_index(early_unwrap(base))
+        addend_is_index = is_scaled_index(early_unwrap(addend))
+        if base_is_index and not addend_is_index:
+            base, addend = addend, base
+        elif not base_is_index and not addend_is_index:
+            if is_pointer_like(addend) and not is_pointer_like(base):
+                base, addend = addend, base
 
     if isinstance(addend, Literal):
         return None
@@ -1115,7 +1189,22 @@ def array_access_from_add(
 
     target_type = base.type.get_pointer_target()
     if target_type is None:
-        return None
+        if (
+            target_size is not None
+            and scale > 0
+            and not base.type.is_pointer_or_array()
+            and not is_register_value(base)
+            and (
+                is_scaled_index(early_unwrap(addend))
+                or (is_pointer_like(base) and target_size == 1)
+            )
+        ):
+            inner_type = infer_array_element_type(scale, stack_info)
+            if inner_type is not None:
+                base = as_type(base, Type.ptr(inner_type), silent=False)
+                target_type = base.type.get_pointer_target()
+        if target_type is None:
+            return None
 
     uw_base = early_unwrap(base)
     typepool = stack_info.global_info.typepool

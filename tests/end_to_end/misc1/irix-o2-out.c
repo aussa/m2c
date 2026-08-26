@@ -1,6 +1,11 @@
+struct _struct_unk_0x8 {
+    /* 0x0 */ char pad0[4];
+    /* 0x4 */ s32 unk4;                             /* inferred */
+};                                                  /* size = 0x8 */
+
 s32 func_00400140(?, ?, s32, ?, s32);               /* static */
 ? func_00400158(s32, s32, s32);                     /* static */
-extern s32 D_410170;
+extern struct _struct_unk_0x8 *D_410170;
 extern ? D_410178;
 
 s32 test(s32 arg0, ? arg1) {
@@ -9,9 +14,9 @@ s32 test(s32 arg0, ? arg1) {
     s32 sp24;
     s32 temp_a2;
     s32 temp_v0_2;
-    void *temp_v0;
+    struct _struct_unk_0x8 *temp_v0;
 
-    temp_v0 = D_410170 + (arg0 * 8);
+    temp_v0 = &D_410170[arg0];
     temp_a2 = temp_v0->unk4 + 1;
     sp2C = temp_a2;
     sp24 = temp_v0->unk8;

@@ -1,15 +1,20 @@
+struct _struct_unk_0x8 {
+    /* 0x0 */ char pad0[4];
+    /* 0x4 */ s32 unk4;                             /* inferred */
+};                                                  /* size = 0x8 */
+
 ? bar(s32, s32, s32);                               /* static */
 s32 foo(?, ?, s32, s32, s32);                       /* static */
-extern s32 global;
+extern struct _struct_unk_0x8 *global;
 static ? global2;
 
 s32 test(s32 arg0, s32 arg1) {
     s32 temp_r29;
     s32 temp_r31;
     s32 temp_r3;
-    void *temp_r5;
+    struct _struct_unk_0x8 *temp_r5;
 
-    temp_r5 = global + (arg0 * 8);
+    temp_r5 = &global[arg0];
     temp_r29 = temp_r5->unk8;
     temp_r31 = temp_r5->unk4 + 1;
     temp_r3 = foo(1, 2, temp_r31, arg1, arg0);

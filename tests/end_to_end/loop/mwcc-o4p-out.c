@@ -2,9 +2,9 @@ void test(s32 arg0, s32 arg1) {
     s32 temp_r5;
     s32 var_ctr_2;
     s32 var_r6;
+    s8 *temp_r5_2;
     s8 *var_r3;
     u32 var_ctr;
-    void *temp_r5_2;
 
     var_r6 = 0;
     if (arg1 > 0) {
@@ -14,7 +14,7 @@ void test(s32 arg0, s32 arg1) {
             if (temp_r5 > 0) {
                 do {
                     temp_r5_2 = arg0 + var_r6;
-                    temp_r5_2->unk0 = 0;
+                    *temp_r5_2 = 0;
                     var_r6 += 8;
                     temp_r5_2->unk1 = 0;
                     temp_r5_2->unk2 = 0;
@@ -32,7 +32,7 @@ void test(s32 arg0, s32 arg1) {
         if (var_r6 < arg1) {
             do {
                 *var_r3 = 0;
-                var_r3 += 1;
+                var_r3 = var_r3 + 1;
                 var_ctr_2 -= 1;
             } while (var_ctr_2 != 0);
         }

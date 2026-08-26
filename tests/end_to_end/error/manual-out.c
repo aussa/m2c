@@ -18,7 +18,7 @@ s32 test(s32 arg0) {
     M2C_TRAP_IF((u32) arg0 >= 6U);
     M2C_ERROR(/* unknown instruction: badinstr $t0, $t0 */);
     temp_t1 = M2C_ERROR(/* unknown instruction: badinstr2 $t1, $t1 */);
-    *NULL = temp_t1 << temp_t1;
-    *NULL = (s32) (M2C_ERROR(/* Read from unset register $v1 */) + 2);
+    *(s32 *) 0 = temp_t1 << temp_t1;
+    *(s32 *) 0 = M2C_ERROR(/* Read from unset register $v1 */) + 2;
     return M2C_ERROR(/* unknown instruction: badinstr3 $v0, $t2 */);
 }

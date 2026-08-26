@@ -7,6 +7,6 @@ s32 test(s32 arg0, s32 arg2) {
     if (arg2 != 0) {
         var_t0 = arg0 + 2;
     }
-    *NULL = var_t0;
+    *(s32 *) 0 = var_t0;
     return temp_v0;
 }

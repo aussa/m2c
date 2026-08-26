@@ -5,7 +5,7 @@ void test(void) {
     void *temp_t1;
 
     temp_t1 = foo();
-    if (*NULL == 0) {
+    if (*(u8 *) 0 == 0) {
         sp10C = temp_t1;
     }
     temp_t1->unk3 = 0;

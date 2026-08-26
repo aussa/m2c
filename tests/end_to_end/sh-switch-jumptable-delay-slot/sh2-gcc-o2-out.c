@@ -11,7 +11,7 @@ s32 test(s32 arg0, s32 arg1) {
     var_r3 = 1;
     var_r7 = 4;
     do {
-        if (*(arg0 + var_r7) > *(arg0 + (var_r6 * 4))) {
+        if (*(s32 *) (arg0 + var_r7) > *(s32 *) (arg0 + (var_r6 * 4))) {
             var_r6 = var_r3;
         }
         var_r3 += 1;
