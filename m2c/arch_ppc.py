@@ -1695,6 +1695,26 @@ class PpcArch(Arch):
                     else:
                         s.write_statement(ExprStmt(error))
 
+        elif mnemonic == "mftb":
+            # mftb rD, TBR reads the time base (268 = TBL, 269 = TBU).
+            assert len(args) in (1, 2) and isinstance(args[0], Register)
+            outputs = [args[0]]
+            tbr = (
+                args[1].value
+                if len(args) == 2 and isinstance(args[1], AsmLiteral)
+                else 268
+            )
+
+            def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                s.set_reg(
+                    a.reg_ref(0),
+                    fn_op(
+                        "M2C_MFTB",
+                        [Literal(tbr, type=Type.u32())],
+                        type=Type.u32(),
+                    ),
+                )
+
         elif mnemonic in ("mfxer", "mtxer", "mffs", "mtfsf"):
             # XER/FPSCR access; emit hook calls.
             if mnemonic in ("mfxer", "mffs"):
@@ -1897,6 +1917,7 @@ class PpcArch(Arch):
         "stfsx": lambda a: make_storex(a, type=Type.f32()),
         "stfdx": lambda a: make_storex(a, type=Type.f64()),
         "psq_st": lambda a: make_store(a, type=Type.f64()),
+        "psq_stx": lambda a: make_storex(a, type=Type.f64()),
     }
     instrs_store_update: StoreInstrMap = {
         "stbu": lambda a: make_store(a, type=Type.int_of_size(8)),
@@ -1927,6 +1948,7 @@ class PpcArch(Arch):
         "lfsx": lambda a: handle_loadx(a, type=Type.f32()),
         "lfdx": lambda a: handle_loadx(a, type=Type.f64()),
         "psq_l": lambda a: handle_load(a, type=Type.f64()),
+        "psq_lx": lambda a: handle_loadx(a, type=Type.f64()),
     }
     instrs_load_update: InstrMap = {
         "lbau": lambda a: handle_load(a, type=Type.s8()),

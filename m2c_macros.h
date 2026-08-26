@@ -93,10 +93,11 @@ typedef s64 M2C_UNK64;
 
 #define M2C_CMP_STR(a, b) (0)
 
-/* PowerPC XER / FPSCR access (mfxer/mtxer, mffs/mtfsf). */
+/* PowerPC XER / FPSCR / time-base access (mfxer/mtxer, mffs/mtfsf, mftb). */
 #define M2C_MFXER() (0)
 #define M2C_MTXER(val) ((void)(val))
 #define M2C_MFFS() (0)
 #define M2C_MTFSF(mask, val) ((void)(mask), (void)(val))
+#define M2C_MFTB(tbr) (0)
 
 #endif
