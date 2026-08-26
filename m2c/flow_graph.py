@@ -1599,7 +1599,7 @@ class FlowGraph:
             for reg, sources in inputs.items():
                 if not isinstance(reg, Register):
                     continue
-                if all(isinstance(src, PrologueRef) for src in sources):
+                if any(isinstance(src, PrologueRef) for src in sources):
                     implicit.add(reg)
         for node in self.nodes:
             for ref in node.block.instruction_refs:
