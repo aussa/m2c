@@ -2308,6 +2308,7 @@ class RegData:
 class RegInfo:
     stack_info: StackInfo = field(repr=False)
     contents: Dict[Register, RegData] = field(default_factory=dict)
+    clobbered_by_call: Dict[Register, RegData] = field(default_factory=dict)
     read_inherited: Set[Register] = field(default_factory=set)
     _current_instr_ref: Optional[InstrRef] = None
 
@@ -2338,6 +2339,9 @@ class RegInfo:
         if key == Register("zero"):
             return Literal(0)
         data = self.contents.get(key)
+        if data is None and key in self.clobbered_by_call:
+            data = self.clobbered_by_call.pop(key)
+            self.contents[key] = data
         if data is None:
             return ErrorExpr(f"Read from unset register {key}")
         ret = data.value
@@ -2371,6 +2375,7 @@ class RegInfo:
         if key not in instr.outputs:
             raise DecompFailure(f"Undeclared write to {key} in {instr}")
         assert key != Register("zero")
+        self.clobbered_by_call.pop(key, None)
         self.contents[key] = RegData(value, meta)
 
     def global_set_with_meta(
@@ -2379,6 +2384,7 @@ class RegInfo:
         """Assign a value to a register from outside an instruction context."""
         assert not self.has_current_instr()
         assert key != Register("zero")
+        self.clobbered_by_call.pop(key, None)
         self.contents[key] = RegData(value, meta)
 
     def update_meta(self, key: Register, meta: RegMeta) -> None:
@@ -3268,12 +3274,15 @@ def find_clobbers_until_dominator(
     return clobbered_vars, has_fn_call
 
 
-def reg_sources(node: Node, reg: Register) -> Tuple[List[Reference], bool]:
+def reg_sources(
+    node: Node, reg: Register, *, preserve_on_clobber: bool = False
+) -> Tuple[List[Reference], bool, bool]:
     assert node.immediate_dominator is not None
     seen = {node.immediate_dominator}
     stack = node.parents[:]
     sources: List[Reference] = []
     uses_dominator = False
+    was_clobbered = False
     while stack:
         n = stack.pop()
         if n == node.immediate_dominator:
@@ -3287,10 +3296,13 @@ def reg_sources(node: Node, reg: Register) -> Tuple[List[Reference], bool]:
                 sources.append(instr_ref)
                 break
             elif reg in instr.clobbers:
-                return [], False
+                if not preserve_on_clobber:
+                    return [], False, False
+                was_clobbered = True
+                break
         else:
             stack.extend(n.parents)
-    return sources, uses_dominator
+    return sources, uses_dominator, was_clobbered
 
 
 def assign_naive_phis(
@@ -3718,8 +3730,12 @@ class NodeState:
         return expr
 
     def clear_caller_save_regs(self) -> None:
-        for reg in self.stack_info.global_info.arch.temp_regs:
+        arch = self.stack_info.global_info.arch
+        preserve = arch.arch == Target.ArchEnum.PPC
+        for reg in arch.temp_regs:
             if reg in self.regs:
+                if preserve:
+                    self.regs.clobbered_by_call[reg] = self.regs.contents[reg]
                 del self.regs[reg]
 
     def maybe_clear_local_var_writes(self, func_args: List[Expression]) -> None:
@@ -4068,6 +4084,7 @@ def create_dominated_node_state(
     """
     stack_info = parent_state.stack_info
     new_regs = RegInfo(stack_info=stack_info)
+    new_regs.clobbered_by_call.update(parent_state.regs.clobbered_by_call)
     child_state = NodeState(node=child, regs=new_regs, stack_info=stack_info)
     for reg, data in parent_state.regs.contents.items():
         new_regs.global_set_with_meta(
@@ -4079,8 +4096,11 @@ def create_dominated_node_state(
     phi_regs = (
         r for r in locs_clobbered_until_dominator(child) if isinstance(r, Register)
     )
+    preserve_clobbered = stack_info.global_info.arch.arch == Target.ArchEnum.PPC
     for reg in phi_regs:
-        sources, uses_dominator = reg_sources(child, reg)
+        sources, uses_dominator, was_clobbered = reg_sources(
+            child, reg, preserve_on_clobber=preserve_clobbered
+        )
 
         inherited_phi = stack_info.get_planned_inherited_phi(child, reg)
         if inherited_phi is not None:
@@ -4143,7 +4163,7 @@ def create_dominated_node_state(
             else:
                 assert_never(dom_expr)
 
-        if sources:
+        if sources and not was_clobbered:
             # For each source of this phi, there will be an associated EvalOnceExpr.
             # If there are planned vars associated with those EvalOnceExpr's --
             # assigning them pre-determined vars and forcing the corresponding
@@ -4172,6 +4192,23 @@ def create_dominated_node_state(
                 )
             new_regs.global_set_with_meta(reg, expr, RegMeta(inherited=True))
 
+        elif was_clobbered:
+            dom_data = parent_state.regs.contents.get(reg)
+            if (
+                dom_data is not None
+                and stack_info.global_info.arch.arch == Target.ArchEnum.PPC
+            ):
+                new_regs.global_set_with_meta(
+                    reg,
+                    dom_data.value,
+                    RegMeta(
+                        inherited=True,
+                        force=dom_data.meta.force,
+                        initial=dom_data.meta.initial,
+                    ),
+                )
+            elif reg in new_regs:
+                del new_regs[reg]
         elif reg in new_regs:
             # Along some path to the dominator the register is clobbered by a
             # function call. Mark it as undefined. (This helps return value and
@@ -4891,7 +4928,10 @@ def translate_to_ast(
     assert fn_sig is not None, "fn_type is known to be a function"
     stack_info.is_variadic = fn_sig.is_variadic
 
-    setup_initial_registers(state, fn_sig, flow_graph.implicit_input_regs())
+    implicit_inputs = None
+    if global_info.arch.arch == Target.ArchEnum.PPC:
+        implicit_inputs = flow_graph.implicit_input_regs()
+    setup_initial_registers(state, fn_sig, implicit_inputs)
 
     if options.debug:
         print(stack_info)

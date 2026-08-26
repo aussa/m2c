@@ -1477,6 +1477,8 @@ class FlowGraph:
     instr_uses: DefaultDict[Reference, LocationRefSetDict] = field(
         default_factory=lambda: defaultdict(LocationRefSetDict)
     )
+    # Registers read before any write reaches them (see compute_flowgraph_inputs_uses).
+    missing_regs: Set[Register] = field(default_factory=set)
 
     def entry_node(self) -> Node:
         return self.nodes[0]
@@ -1590,18 +1592,29 @@ class FlowGraph:
         """Registers read before ever being written in the function.
         Their values are set by the caller, so they are implicit inputs."""
         implicit: Set[Register] = set()
-        has_internal_source: Set[Register] = set()
+        written: Set[Register] = set()
         for ref, inputs in self.instr_inputs.items():
             if not isinstance(ref, InstrRef):
                 continue
             for reg, sources in inputs.items():
                 if not isinstance(reg, Register):
                     continue
-                if any(not isinstance(src, PrologueRef) for src in sources):
-                    has_internal_source.add(reg)
-                else:
+                if all(isinstance(src, PrologueRef) for src in sources):
                     implicit.add(reg)
-        return implicit - has_internal_source
+        for node in self.nodes:
+            for ref in node.block.instruction_refs:
+                for out in ref.instruction.outputs:
+                    if isinstance(out, Register):
+                        written.add(out)
+        for node in self.nodes:
+            for ref in node.block.instruction_refs:
+                if ref.instruction.function_target is not None:
+                    continue
+                for inp in ref.instruction.inputs:
+                    if isinstance(inp, Register) and inp not in written:
+                        implicit.add(inp)
+        implicit.update(self.missing_regs)
+        return implicit
 
 
 def phi_loc_sources(node: Node, loc: Location, imdom_srcs: RefSet) -> RefSet:
@@ -1742,6 +1755,8 @@ def compute_flowgraph_inputs_uses(
     # Recursively traverse every node, starting with the entry node, populating instr_inputs
     entry_node = flow_graph.entry_node()
     process_node(entry_node, entry_reg_srcs)
+
+    object.__setattr__(flow_graph, "missing_regs", {reg for reg, _ in missing_regs})
 
     if print_warnings and missing_regs:
         print("/*")
