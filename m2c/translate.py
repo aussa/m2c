@@ -1667,6 +1667,9 @@ class StructAccess(Expression):
 
         # Rewrite `x->unk0` to `*x` and `x.unk0` to `x`, unless has_nonzero_access
         if self.offset == 0 and not has_nonzero_access:
+            if self.type.is_pointer() and isinstance(var, Cast):
+                var = Cast(var.expr, Type.ptr(self.type), reinterpret=True,
+                           silent=False)
             return f"{'*' if deref else ''}{var.format(fmt)}"
 
         return f"{parenthesize_for_struct_access(var, fmt)}{field_name}"
@@ -2924,6 +2927,13 @@ def format_assignment(
     else:
         is_dest = lambda e: var_for_expr(e) == dest
     source = late_unwrap(source)
+    if (
+        isinstance(dest, (Var, NaivePhiExpr))
+        and dest.type.is_pointer()
+        and not source.type.is_pointer_or_array()
+        and not isinstance(source, Literal)
+    ):
+        source = Cast(source, dest.type, reinterpret=True, silent=False)
     if isinstance(source, BinaryOp) and source.op in COMPOUND_ASSIGNMENT_OPS:
         source = source.normalize_for_formatting()
         rhs = None
