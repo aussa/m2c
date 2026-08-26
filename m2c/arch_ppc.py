@@ -1225,6 +1225,44 @@ class PpcArch(Arch):
                     eval_fn=eval_crclr,
                 )
 
+        if mnemonic in (
+            "crand", "crxor", "crnand", "crnor", "creqv", "crandc", "crorc",
+        ):
+            # CR logical ops with numeric bit operands; emit a hook call.
+            if args and all(isinstance(a, AsmLiteral) for a in args):
+                bit_values = [a.value for a in args]
+                bit_names = {0: "lt", 1: "gt", 2: "eq", 3: "so"}
+                out_reg = Register(
+                    f"cr{bit_values[0] // 4}_{bit_names[bit_values[0] % 4]}"
+                )
+                op = "M2C_" + mnemonic.upper()
+
+                def eval_crlogical(s: NodeState, a: InstrArgs) -> None:
+                    s.set_reg(
+                        out_reg,
+                        fn_op(
+                            op,
+                            [Literal(v, type=Type.u32()) for v in bit_values],
+                            type=Type.boolean(),
+                        ),
+                    )
+
+                return Instruction(
+                    mnemonic=mnemonic,
+                    args=args,
+                    meta=meta,
+                    inputs=[],
+                    clobbers=[],
+                    outputs=[out_reg],
+                    jump_target=None,
+                    function_target=None,
+                    is_conditional=False,
+                    is_return=False,
+                    is_load=False,
+                    is_store=False,
+                    eval_fn=eval_crlogical,
+                )
+
         cr0_bits: List[Location] = [
             Register("cr0_lt"),
             Register("cr0_gt"),
@@ -1253,6 +1291,8 @@ class PpcArch(Arch):
         }
         psq_imms = 0
         size = memory_sizes.get(mnemonic.lstrip("stl").rstrip("azux"))
+        if mnemonic in ("sthbrx", "stwbrx", "lwbrx", "lhbrx"):
+            size = memory_sizes[mnemonic[2]]
         if mnemonic.startswith("psq_l") or mnemonic.startswith("psq_st"):
             psq_imms = 2
             size = 8
@@ -1325,6 +1365,33 @@ class PpcArch(Arch):
             clobbers = list(cls.temp_regs)
             function_target = reg
             eval_fn = lambda s, a: s.make_function_call(a.regs[reg], outputs)
+        elif mnemonic == "bla":
+            # Branch absolute with link: a call to an absolute address.
+            assert len(args) == 1 and isinstance(args[0], AsmLiteral)
+            addr = args[0].value
+            clobbers = list(cls.temp_regs)
+
+            def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                s.write_statement(
+                    void_fn_op("M2C_BLA", [Literal(addr, type=Type.u32())])
+                )
+                s.clear_caller_save_regs()
+
+            return Instruction(
+                mnemonic=mnemonic,
+                args=args,
+                meta=meta,
+                inputs=[],
+                clobbers=clobbers,
+                outputs=[],
+                jump_target=None,
+                function_target=None,
+                is_conditional=False,
+                is_return=False,
+                is_load=False,
+                is_store=False,
+                eval_fn=eval_fn,
+            )
         elif mnemonic == "b":
             # Unconditional jump
             assert len(args) == 1
@@ -1666,6 +1733,134 @@ class PpcArch(Arch):
 
         elif mnemonic in cls.instrs_ignore:
             pass
+        elif mnemonic in (
+            "rfi", "sc", "tlbie", "tlbsync", "mtfsb1",
+            "mfsrr0", "mtsrr0", "mfsrr1", "mtsrr1",
+            "mfdsisr", "mfdar", "mfdec", "mfsdr1", "mtsdr1", "mfear",
+            "mfmsr", "mtmsr", "mfsr", "mtsr",
+            "mtdbatu", "mtdbatl", "mtibatu", "mtibatl",
+            "mfdbatu", "mfdbatl", "mfibatu", "mfibatl",
+        ):
+            # Privileged system-register / MSR / SR / BAT moves and system
+            # instructions. Emit hook calls since they are not portable C.
+            if mnemonic in ("rfi", "sc", "tlbie", "tlbsync", "mtfsb1"):
+                inputs = [r for r in args if isinstance(r, Register)]
+                op_name = {
+                    "rfi": "M2C_RFI",
+                    "sc": "M2C_SC",
+                    "tlbie": "M2C_TLBIE",
+                    "tlbsync": "M2C_TLBSYNC",
+                    "mtfsb1": "M2C_MTFSB1",
+                }[mnemonic]
+
+                def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    if mnemonic == "tlbie":
+                        s.write_statement(void_fn_op(op_name, [a.reg(0)]))
+                    elif mnemonic == "mtfsb1":
+                        arg = args[0]
+                        if isinstance(arg, Register):
+                            name = arg.register_name
+                            field = int(name[2:-2])
+                            bit = {"lt": 0, "gt": 1, "eq": 2, "so": 3}[name[-2:]]
+                            bit_index = 4 * field + bit
+                        else:
+                            assert isinstance(arg, AsmLiteral)
+                            bit_index = arg.value
+                        s.write_statement(
+                            void_fn_op(
+                                op_name, [Literal(bit_index, type=Type.u32())]
+                            )
+                        )
+                    else:
+                        s.write_statement(void_fn_op(op_name, []))
+
+                return Instruction(
+                    mnemonic=mnemonic,
+                    args=args,
+                    meta=meta,
+                    inputs=inputs,
+                    clobbers=[],
+                    outputs=[],
+                    jump_target=None,
+                    function_target=None,
+                    is_conditional=False,
+                    is_return=False,
+                    is_load=False,
+                    is_store=False,
+                    eval_fn=eval_fn,
+                )
+
+            is_read = mnemonic.startswith("mf")
+            if is_read:
+                reg_arg = args[0]
+                outputs = [reg_arg]
+            elif len(args) == 1:
+                reg_arg = args[0]
+                inputs = [reg_arg]
+            else:
+                reg_arg = args[1]
+                inputs = [reg_arg]
+            assert isinstance(reg_arg, Register)
+            src_index = 0 if len(args) == 1 else 1
+
+            if mnemonic in ("mfmsr", "mtmsr"):
+                op_name = "M2C_MFMSR" if is_read else "M2C_MTMSR"
+                index_expr = None
+            else:
+                fixed_spr = {
+                    "mfsrr0": 26, "mtsrr0": 26, "mfsrr1": 27, "mtsrr1": 27,
+                    "mfdsisr": 18, "mfdar": 19, "mfdec": 22,
+                    "mfsdr1": 25, "mtsdr1": 25, "mfear": 282,
+                }
+                if mnemonic in fixed_spr:
+                    op_name = "M2C_MFSPR" if is_read else "M2C_MTSPR"
+                    index_expr = Literal(fixed_spr[mnemonic], type=Type.u32())
+                elif mnemonic in ("mfsr", "mtsr"):
+                    op_name = "M2C_MFSR" if is_read else "M2C_MTSR"
+                    idx = args[1] if is_read else args[0]
+                    assert isinstance(idx, AsmLiteral)
+                    index_expr = Literal(idx.value, type=Type.u32())
+                else:
+                    # BAT registers (IBAT 528-535, DBAT 536-543).
+                    op_name = "M2C_MFSPR" if is_read else "M2C_MTSPR"
+                    idx = args[1] if is_read else args[0]
+                    assert isinstance(idx, AsmLiteral)
+                    is_i = "ibat" in mnemonic
+                    is_l = "batl" in mnemonic
+                    base = 528 if is_i else 536
+                    index_expr = Literal(
+                        base + (1 if is_l else 0) + 2 * idx.value,
+                        type=Type.u32(),
+                    )
+
+            if is_read:
+                def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    call_args = [] if index_expr is None else [index_expr]
+                    s.set_reg(
+                        a.reg_ref(0),
+                        fn_op(op_name, call_args, type=Type.u32()),
+                    )
+            else:
+                def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    src = a.reg(src_index)
+                    call_args = [src] if index_expr is None else [index_expr, src]
+                    s.write_statement(void_fn_op(op_name, call_args))
+
+            return Instruction(
+                mnemonic=mnemonic,
+                args=args,
+                meta=meta,
+                inputs=inputs,
+                clobbers=[],
+                outputs=outputs,
+                jump_target=None,
+                function_target=None,
+                is_conditional=False,
+                is_return=False,
+                is_load=False,
+                is_store=False,
+                eval_fn=eval_fn,
+            )
         elif mnemonic in ("mfspr", "mtspr", "mfsprg", "mtsprg"):
             # mfspr/mtspr; mfsprg/mtsprg use a GQR index 0-7. Emit hook calls.
             is_mfspr = mnemonic in ("mfspr", "mfsprg")
@@ -1936,6 +2131,8 @@ class PpcArch(Arch):
         "stbx": lambda a: make_storex(a, type=Type.int_of_size(8)),
         "sthx": lambda a: make_storex(a, type=Type.int_of_size(16)),
         "stwx": lambda a: make_storex(a, type=Type.reg32(likely_float=False)),
+        "sthbrx": lambda a: make_storex(a, type=Type.int_of_size(16)),
+        "stwbrx": lambda a: make_storex(a, type=Type.reg32(likely_float=False)),
         # TODO: Do we need to model the truncation from f64 to f32 here?
         "stfs": lambda a: make_store(a, type=Type.f32()),
         "stfd": lambda a: make_store(a, type=Type.f64()),
