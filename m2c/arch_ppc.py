@@ -2529,10 +2529,7 @@ class PpcArch(Arch):
 
     @staticmethod
     def function_return(expr: Expression) -> Dict[Register, Expression]:
-        return {
-            Register("f1"): Cast(
-                expr, reinterpret=True, silent=True, type=Type.floatish()
-            ),
+        ret: Dict[Register, Expression] = {
             Register("r3"): Cast(
                 expr, reinterpret=True, silent=True, type=Type.intptr()
             ),
@@ -2540,3 +2537,8 @@ class PpcArch(Arch):
                 Cast(expr, reinterpret=True, silent=False, type=Type.u64())
             ),
         }
+        if not expr.type.is_pointer_or_array():
+            ret[Register("f1")] = Cast(
+                expr, reinterpret=True, silent=True, type=Type.floatish()
+            )
+        return ret

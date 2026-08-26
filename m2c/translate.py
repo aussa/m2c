@@ -4001,6 +4001,8 @@ class NodeState:
         for out in outputs:
             if not isinstance(out, Register):
                 continue
+            if out not in return_reg_vals:
+                continue
             val = return_reg_vals[out]
             self.set_reg_real(out, val, transparent=False, function_return=True)
 
