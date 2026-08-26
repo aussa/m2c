@@ -1086,7 +1086,7 @@ class PpcArch(Arch):
                 return AsmInstruction(instr.mnemonic, [cr0] + instr.args)
         if instr.mnemonic in (
             "cror", "crnot", "crand", "crxor", "crnand", "crnor",
-            "creqv", "crandc", "crorc",
+            "creqv", "crandc", "crorc", "crclr", "crset",
         ):
             # Normalize named CR bits (un/lt/gt/eq/so) to numeric indices.
             cr_bit_names = {"lt": 0, "gt": 1, "eq": 2, "so": 3, "un": 3}
@@ -1197,6 +1197,33 @@ class PpcArch(Arch):
                         is_store=False,
                         eval_fn=eval_crnot,
                     )
+
+        if mnemonic in ("crclr", "crset"):
+            # crclr/crset set a CR bit to 0/1 (e.g. crclr cr1eq -> bit 6).
+            if len(args) == 1 and isinstance(args[0], AsmLiteral):
+                bit = args[0].value
+                bit_names = {0: "lt", 1: "gt", 2: "eq", 3: "so"}
+                bit_reg = Register(f"cr{bit // 4}_{bit_names[bit % 4]}")
+                bit_value = 0 if mnemonic == "crclr" else 1
+
+                def eval_crclr(s: NodeState, a: InstrArgs) -> None:
+                    s.set_reg(bit_reg, Literal(bit_value))
+
+                return Instruction(
+                    mnemonic=mnemonic,
+                    args=args,
+                    meta=meta,
+                    inputs=[],
+                    clobbers=[],
+                    outputs=[bit_reg],
+                    jump_target=None,
+                    function_target=None,
+                    is_conditional=False,
+                    is_return=False,
+                    is_load=False,
+                    is_store=False,
+                    eval_fn=eval_crclr,
+                )
 
         cr0_bits: List[Location] = [
             Register("cr0_lt"),
@@ -1892,10 +1919,6 @@ class PpcArch(Arch):
         # Assume stmw/lmw are only used for saving/restoring saved regs
         "stmw",
         "lmw",
-        # `{crclr,crset} 6` are used as part of the ABI for floats & varargs
-        # For now, we can ignore them (and later use them to help in function_abi)
-        "crclr",
-        "crset",
         # Cache hints; dcbz is not a hint and is not ignored.
         "dcbt",
         "dcbst",
@@ -2193,11 +2216,13 @@ class PpcArch(Arch):
         if loc.offset is not None:
             return f"arg_sp{format_hex(loc.offset)}"
         assert loc.reg is not None
-        reg_num = int(loc.reg.register_name[1:])
-        if loc.reg.register_name.startswith("r"):
-            return f"arg{reg_num - 3}"
-        else:
-            return f"farg{reg_num - 1}"
+        reg_name = loc.reg.register_name
+        if reg_name.startswith("r"):
+            return f"arg{int(reg_name[1:]) - 3}"
+        if reg_name.startswith("f"):
+            return f"farg{int(reg_name[1:]) - 1}"
+        # Non-ABI register used as an implicit function input.
+        return f"arg_{reg_name}"
 
     # Duplicated by MipseeArch.function_abi
     @staticmethod

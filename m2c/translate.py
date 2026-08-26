@@ -4788,7 +4788,20 @@ def setup_reg_vars(stack_info: StackInfo, options: Options) -> None:
         stack_info.add_register_var(reg, reg_name)
 
 
-def setup_initial_registers(state: NodeState, fn_sig: FunctionSignature) -> None:
+def _implicit_input_type(reg: Register) -> Type:
+    name = reg.register_name
+    if name.startswith("cr"):
+        return Type.boolean()
+    if name.startswith("f"):
+        return Type.floatish()
+    return Type.intptr()
+
+
+def setup_initial_registers(
+    state: NodeState,
+    fn_sig: FunctionSignature,
+    implicit_input_regs: Optional[AbstractSet[Register]] = None,
+) -> None:
     """Set up initial register contents for translation."""
     stack_info = state.stack_info
     arch = stack_info.global_info.arch
@@ -4829,6 +4842,23 @@ def setup_initial_registers(state: NodeState, fn_sig: FunctionSignature) -> None
                 RegMeta(uninteresting=True, initial=True),
             )
 
+    if implicit_input_regs:
+        # Registers read before being written come from the caller. Treat them
+        # as implicit parameters so they resolve instead of M2C_ERROR.
+        for i, reg in enumerate(sorted(implicit_input_regs, key=lambda r: r.register_name)):
+            if (
+                reg == Register("zero")
+                or reg in state.regs
+                or reg in arch.saved_regs
+            ):
+                continue
+            loc = ArgLoc(None, 1000 + i, reg)
+            state.set_initial_reg(
+                reg,
+                make_arg(loc, _implicit_input_type(reg)),
+                RegMeta(uninteresting=True, initial=True),
+            )
+
 
 def translate_to_ast(
     function: Function,
@@ -4861,7 +4891,7 @@ def translate_to_ast(
     assert fn_sig is not None, "fn_type is known to be a function"
     stack_info.is_variadic = fn_sig.is_variadic
 
-    setup_initial_registers(state, fn_sig)
+    setup_initial_registers(state, fn_sig, flow_graph.implicit_input_regs())
 
     if options.debug:
         print(stack_info)

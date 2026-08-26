@@ -1586,6 +1586,23 @@ class FlowGraph:
             for reg, deps in uses.items():
                 assert deps == self.instr_uses[ref].get(reg)
 
+    def implicit_input_regs(self) -> Set[Register]:
+        """Registers read before ever being written in the function.
+        Their values are set by the caller, so they are implicit inputs."""
+        implicit: Set[Register] = set()
+        has_internal_source: Set[Register] = set()
+        for ref, inputs in self.instr_inputs.items():
+            if not isinstance(ref, InstrRef):
+                continue
+            for reg, sources in inputs.items():
+                if not isinstance(reg, Register):
+                    continue
+                if any(not isinstance(src, PrologueRef) for src in sources):
+                    has_internal_source.add(reg)
+                else:
+                    implicit.add(reg)
+        return implicit - has_internal_source
+
 
 def phi_loc_sources(node: Node, loc: Location, imdom_srcs: RefSet) -> RefSet:
     """
