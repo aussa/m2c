@@ -13,6 +13,7 @@ from typing import (
 from .error import DecompFailure
 from .ir_pattern import IrMatch, IrPattern
 from .options import Target
+from .asm_file import BodyPart, Label
 from .asm_instruction import (
     Argument,
     AsmAddressMode,
@@ -70,7 +71,6 @@ from .evaluate import (
     add_imm,
     carry_add_to,
     carry_sub_from,
-    error_stmt,
     fn_op,
     fold_divmod,
     fold_mul_chains,
@@ -125,8 +125,74 @@ class FcmpoCrorPattern(SimpleAsmPattern):
         return None
 
 
+class FcmpuCrorSoPattern(AsmPattern):
+    """fcmpu crF; cror so,eq,gt/lt -> fcmpo.so.{gte,lte}.fictive.
+
+    Same-block instructions that do not write the field may intervene."""
+
+    def match(self, matcher: AsmMatcher) -> Optional[Replacement]:
+        if matcher.index >= len(matcher.input):
+            return None
+        fcmpu = matcher.input[matcher.index]
+        if not isinstance(fcmpu, Instruction) or fcmpu.mnemonic != "fcmpu":
+            return None
+        if len(fcmpu.args) < 3:
+            return None
+        field_reg = fcmpu.args[0]
+        if not isinstance(field_reg, Register):
+            return None
+        name = field_reg.register_name
+        if not (name.startswith("cr") and name[2:].isdigit()):
+            return None
+        field = int(name[2:])
+        so_bit = 4 * field + 3
+        eq_bit = 4 * field + 2
+        gt_bit = 4 * field + 1
+        lt_bit = 4 * field + 0
+        field_bits = {
+            Register(f"cr{field}_lt"),
+            Register(f"cr{field}_gt"),
+            Register(f"cr{field}_eq"),
+            Register(f"cr{field}_so"),
+        }
+
+        intervening: List[BodyPart] = []
+        index = matcher.index + 1
+        while index < len(matcher.input):
+            part = matcher.input[index]
+            if isinstance(part, Label):
+                # Basic block boundary.
+                return None
+            if not isinstance(part, Instruction):
+                return None
+            if part.mnemonic == "cror" and len(part.args) == 3:
+                literals = [a for a in part.args if isinstance(a, AsmLiteral)]
+                if len(literals) == 3:
+                    d, e, g = (lit.value for lit in literals)
+                    if d == so_bit and e == eq_bit:
+                        if g == gt_bit:
+                            mn = "fcmpo.so.gte.fictive"
+                        elif g == lt_bit:
+                            mn = "fcmpo.so.lte.fictive"
+                        else:
+                            return None
+                        return Replacement(
+                            [AsmInstruction(mn, fcmpu.args)] + intervening,
+                            2 + len(intervening),
+                        )
+            if part.jump_target is not None or part.is_return:
+                return None
+            if any(reg in field_bits for reg in part.outputs + part.clobbers):
+                return None
+            intervening.append(part)
+            index += 1
+        return None
+
+
 class MfcrPattern(SimpleAsmPattern):
-    """Comparison results extracted as ints."""
+    """mfcr + rlwinm bit-extract -> the extracted crF_bit register."""
+
+    BIT_NAMES = ("lt", "gt", "eq", "so")
 
     pattern = make_pattern(
         "mfcr $x",
@@ -135,16 +201,10 @@ class MfcrPattern(SimpleAsmPattern):
 
     def replace(self, m: AsmMatch) -> Optional[Replacement]:
         x = m.regs["x"]
-        if m.literals["N"] == 1:
-            reg = Register("cr0_lt")
-        elif m.literals["N"] == 2:
-            reg = Register("cr0_gt")
-        elif m.literals["N"] == 3:
-            reg = Register("cr0_eq")
-        elif m.literals["N"] == 4:
-            reg = Register("cr0_so")
-        else:
-            return None
+        p = (31 + m.literals["N"]) % 32
+        field = p // 4
+        bit = p % 4
+        reg = Register(f"cr{field}_{self.BIT_NAMES[bit]}")
         return Replacement([AsmInstruction("move.fictive", [x, reg])], len(m.body))
 
 
@@ -689,6 +749,37 @@ class PpcArch(Arch):
     frame_pointer_regs = [Register("r30")]
     return_address_reg = Register("lr")
 
+    # Gekko SPR numbers. TBL/TBU read via mftb.
+    spr_names = {
+        "XER": 1, "LR": 8, "CTR": 9, "DSISR": 18, "DAR": 19, "DEC": 22,
+        "SDR1": 25, "SRR0": 26, "SRR1": 27,
+        "SPRG0": 272, "SPRG1": 273, "SPRG2": 274, "SPRG3": 275,
+        "EAR": 282, "TBL": 284, "TBU": 285, "PVR": 287,
+        "IBAT0U": 528, "IBAT0L": 529, "IBAT1U": 530, "IBAT1L": 531,
+        "IBAT2U": 532, "IBAT2L": 533, "IBAT3U": 534, "IBAT3L": 535,
+        "DBAT0U": 536, "DBAT0L": 537, "DBAT1U": 538, "DBAT1L": 539,
+        "DBAT2U": 540, "DBAT2L": 541, "DBAT3U": 542, "DBAT3L": 543,
+        "GQR0": 912, "GQR1": 913, "GQR2": 914, "GQR3": 915, "GQR4": 916,
+        "GQR5": 917, "GQR6": 918, "GQR7": 919,
+        "HID2": 920, "WPAR": 921, "DMA_U": 922, "DMA_L": 923,
+        "UMMCR0": 936, "UPMC1": 937, "UPMC2": 938, "USIA": 939,
+        "UMMCR1": 940, "UPMC3": 941, "UPMC4": 942, "USDA": 943,
+        "MMCR0": 952, "PMC1": 953, "PMC2": 954, "SIA": 955, "MMCR1": 956,
+        "PMC3": 957, "PMC4": 958, "SDA": 959,
+        "HID0": 1008, "HID1": 1009, "IABR": 1010, "DABR": 1013,
+        "L2CR": 1017, "ICTC": 1019, "THRM1": 1020, "THRM2": 1021,
+        "THRM3": 1022,
+    }
+
+    @classmethod
+    def _spr_number(cls, arg: Argument) -> Optional[int]:
+        """Resolve an mfspr/mtspr SPR operand (literal number or name)."""
+        if isinstance(arg, AsmLiteral):
+            return arg.value
+        if isinstance(arg, AsmGlobalSymbol):
+            return cls.spr_names.get(arg.symbol_name.upper())
+        return None
+
     base_return_regs = [(Register("r3"), False), (Register("f1"), True)]
     all_return_regs = [Register(r) for r in ["f1", "r3", "r4"]]
     argument_regs = [
@@ -790,8 +881,7 @@ class PpcArch(Arch):
             for r in [
                 # `zero` isn't a "real" PPC register; it's a normalized form of `r0`
                 "zero",
-                # TODO: These `crX` registers are only used to parse instructions, but
-                # the instructions that use these registers aren't implemented yet.
+                # CR field bit registers (crN_lt/gt/eq/so).
                 "cr0",
                 "cr1",
                 "cr2",
@@ -801,6 +891,11 @@ class PpcArch(Arch):
                 "cr6",
                 "cr7",
             ]
+        ]
+        + [
+            Register(f"cr{n}_{bit}")
+            for n in range(8)
+            for bit in ("lt", "gt", "eq", "so")
         ]
     )
 
@@ -950,6 +1045,11 @@ class PpcArch(Arch):
                 return make_dotted(mn, [args[0], args[2], args[1]])
             if base_mnemonic == "rotlwi":
                 return make_dotted("rlwinm", args[:2] + [args[2], lit(0), lit(31)])
+            if base_mnemonic == "rotlw":
+                # Rotate left by a variable amount; rlwnm full mask.
+                return make_dotted(
+                    "rlwnm", args[:2] + [args[2], lit(0), lit(31)]
+                )
             if base_mnemonic == "rotrwi":
                 return make_dotted(
                     "rlwinm", args[:2] + [sub(lit(32), args[2]), lit(0), lit(31)]
@@ -988,6 +1088,32 @@ class PpcArch(Arch):
                 # For the two-argument form of cmpw, the insert an implicit CR0 as the first arg
                 cr0: Argument = Register("cr0")
                 return AsmInstruction(instr.mnemonic, [cr0] + instr.args)
+        if instr.mnemonic in (
+            "cror", "crnot", "crand", "crxor", "crnand", "crnor",
+            "creqv", "crandc", "crorc",
+        ):
+            # Normalize named CR bits (un/lt/gt/eq/so) to numeric indices.
+            cr_bit_names = {"lt": 0, "gt": 1, "eq": 2, "so": 3, "un": 3}
+
+            def cr_bit_number(arg: Argument) -> Optional[Argument]:
+                if not isinstance(arg, AsmGlobalSymbol):
+                    return None
+                name = arg.symbol_name.lower()
+                if name in cr_bit_names:
+                    return AsmLiteral(cr_bit_names[name])
+                if name.startswith("cr") and len(name) > 2:
+                    field = name[2:-2]
+                    bit = name[-2:]
+                    if field.isdigit() and bit in cr_bit_names:
+                        return AsmLiteral(4 * int(field) + cr_bit_names[bit])
+                return None
+
+            new_args = []
+            for arg in args:
+                num = cr_bit_number(arg)
+                new_args.append(num if num is not None else arg)
+            if new_args != args:
+                return AsmInstruction(instr.mnemonic, new_args)
         return instr
 
     @classmethod
@@ -1007,12 +1133,93 @@ class PpcArch(Arch):
 
         instr_str = str(AsmInstruction(mnemonic, args))
 
+        if mnemonic in ("cror", "crnot"):
+            # cror D,E,G sets D = E|G; crnot D,S sets D = !S.
+            literals = [a for a in args if isinstance(a, AsmLiteral)]
+            bit_names = {0: "lt", 1: "gt", 2: "eq", 3: "so"}
+            if mnemonic == "cror" and len(args) == 3 and len(literals) == 3:
+                d, e, g = (lit.value for lit in literals)
+                if d % 4 == 3 and e % 4 == 2 and d // 4 == e // 4 == g // 4:
+                    if g % 4 in (0, 1):
+                        field = d // 4
+                        bit_name = "lt" if g % 4 == 0 else "gt"
+                        eq_reg = Register(f"cr{field}_eq")
+                        other_reg = Register(f"cr{field}_{bit_name}")
+                        so_reg = Register(f"cr{field}_so")
+
+                        def eval_cror(s: NodeState, a: InstrArgs) -> None:
+                            eq = a.cmp_reg(eq_reg.register_name)
+                            other = a.cmp_reg(other_reg.register_name)
+                            combined = BinaryOp(
+                                eq, "||", other, type=Type.boolean()
+                            )
+                            s.set_reg(so_reg, combined)
+
+                        return Instruction(
+                            mnemonic=mnemonic,
+                            args=args,
+                            meta=meta,
+                            inputs=[eq_reg, other_reg],
+                            clobbers=[],
+                            outputs=[so_reg],
+                            jump_target=None,
+                            function_target=None,
+                            is_conditional=False,
+                            is_return=False,
+                            is_load=False,
+                            is_store=False,
+                            eval_fn=eval_cror,
+                        )
+            if mnemonic == "crnot" and len(args) == 2 and len(literals) == 2:
+                d, s = (lit.value for lit in literals)
+                if d % 4 in bit_names and s % 4 in bit_names:
+                    d_reg = Register(
+                        f"cr{d // 4}_{bit_names[d % 4]}"
+                    )
+                    s_reg = Register(
+                        f"cr{s // 4}_{bit_names[s % 4]}"
+                    )
+
+                    def eval_crnot(s: NodeState, a: InstrArgs) -> None:
+                        val = a.cmp_reg(s_reg.register_name)
+                        s.set_reg(
+                            d_reg, UnaryOp("!", val, type=Type.boolean())
+                        )
+
+                    return Instruction(
+                        mnemonic=mnemonic,
+                        args=args,
+                        meta=meta,
+                        inputs=[s_reg],
+                        clobbers=[],
+                        outputs=[d_reg],
+                        jump_target=None,
+                        function_target=None,
+                        is_conditional=False,
+                        is_return=False,
+                        is_load=False,
+                        is_store=False,
+                        eval_fn=eval_crnot,
+                    )
+
         cr0_bits: List[Location] = [
             Register("cr0_lt"),
             Register("cr0_gt"),
             Register("cr0_eq"),
             Register("cr0_so"),
         ]
+
+        def cr_field_bits(cr_field: Register) -> List[Register]:
+            # The 4 bits (lt, gt, eq, so) of a condition register field.
+            name = cr_field.register_name
+            assert name.startswith("cr") and name[2:].isdigit()
+            n = int(name[2:])
+            return [
+                Register(f"cr{n}_lt"),
+                Register(f"cr{n}_gt"),
+                Register(f"cr{n}_eq"),
+                Register(f"cr{n}_so"),
+            ]
 
         memory_sizes = {
             "b": 1,
@@ -1100,13 +1307,16 @@ class PpcArch(Arch):
             assert len(args) == 1
             jump_target = get_jump_target(args[0])
         elif mnemonic in cls.instrs_branches:
-            # Normal branch
-            # TODO: Support crN argument
+            # Branch on a CR bit; a crN field arg overrides cr0.
             assert 1 <= len(args) <= 2
-            # If the name starts with "!", negate the condition
             raw_name = cls.instrs_branches[mnemonic]
             negated = raw_name.startswith("!")
             reg_name = raw_name.lstrip("!")
+            if len(args) == 2 and isinstance(args[0], Register):
+                cr_field = args[0].register_name
+                if cr_field.startswith("cr") and cr_field[2:].isdigit():
+                    suffix = reg_name.split("_", 1)[1]
+                    reg_name = f"cr{cr_field[2:]}_{suffix}"
 
             inputs = [Register(reg_name)]
             jump_target = get_jump_target(args[-1])
@@ -1413,23 +1623,175 @@ class PpcArch(Arch):
 
         elif mnemonic in cls.instrs_ppc_compare:
             assert len(args) == 3 and isinstance(args[1], Register)
+            assert isinstance(args[0], Register)
             inputs = [r for r in args[1:] if isinstance(r, Register)]
-            outputs = list(cr0_bits)
+            outputs = list(cr_field_bits(args[0]))
 
             def eval_fn(s: NodeState, a: InstrArgs) -> None:
-                base_reg = a.reg_ref(0)
-                if base_reg != Register("cr0"):
-                    error = f'"{instr_str}" is not supported, the first arg is not $cr0'
-                    s.write_statement(error_stmt(error))
+                # Write the field's 4 bits; fictives keep them live for cror.
+                cr_lt, cr_gt, cr_eq, cr_so = cr_field_bits(args[0])
+                if mnemonic in ("fcmpo.so.gte.fictive", "fcmpo.so.lte.fictive"):
+                    s.set_reg(cr_so, cls.instrs_ppc_compare[mnemonic](a, "=="))
+                    s.set_reg(cr_eq, cls.instrs_ppc_compare["fcmpu"](a, "=="))
+                    s.set_reg(cr_gt, cls.instrs_ppc_compare["fcmpu"](a, ">"))
+                    s.set_reg(cr_lt, cls.instrs_ppc_compare["fcmpu"](a, "<"))
                     return
-
-                s.set_reg(Register("cr0_eq"), cls.instrs_ppc_compare[mnemonic](a, "=="))
-                s.set_reg(Register("cr0_gt"), cls.instrs_ppc_compare[mnemonic](a, ">"))
-                s.set_reg(Register("cr0_lt"), cls.instrs_ppc_compare[mnemonic](a, "<"))
-                s.set_reg(Register("cr0_so"), Literal(0))
+                s.set_reg(cr_eq, cls.instrs_ppc_compare[mnemonic](a, "=="))
+                s.set_reg(cr_gt, cls.instrs_ppc_compare[mnemonic](a, ">"))
+                s.set_reg(cr_lt, cls.instrs_ppc_compare[mnemonic](a, "<"))
+                s.set_reg(cr_so, Literal(0))
 
         elif mnemonic in cls.instrs_ignore:
             pass
+        elif mnemonic in ("mfspr", "mtspr", "mfsprg", "mtsprg"):
+            # mfspr/mtspr; mfsprg/mtsprg use a GQR index 0-7. Emit hook calls.
+            is_mfspr = mnemonic in ("mfspr", "mfsprg")
+            if is_mfspr:
+                assert len(args) == 2 and isinstance(args[0], Register)
+                spr_arg = args[1]
+                outputs = [args[0]]
+            else:
+                assert len(args) == 2 and isinstance(args[1], Register)
+                spr_arg = args[0]
+                inputs = [args[1]]
+            spr = cls._spr_number(spr_arg)
+            if mnemonic in ("mfsprg", "mtsprg") and spr is not None and spr < 8:
+                # Literal GQR index -> GQR SPR number (912 + index).
+                spr += 912
+            if spr is not None:
+                def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    if is_mfspr:
+                        s.set_reg(
+                            a.reg_ref(0),
+                            fn_op(
+                                "M2C_MFSPR",
+                                [Literal(spr, type=Type.u32())],
+                                type=Type.u32(),
+                            ),
+                        )
+                    else:
+                        s.write_statement(
+                            void_fn_op(
+                                "M2C_MTSPR",
+                                [Literal(spr, type=Type.u32()), a.reg(1)],
+                            )
+                        )
+            else:
+                # Unrecognized SPR name/number: fall back to the generic
+                # unknown-instruction error.
+                if args and isinstance(args[0], Register):
+                    inputs = [r for r in args[1:] if isinstance(r, Register)]
+                    outputs = [args[0]]
+                    maybe_dest_first = True
+                else:
+                    maybe_dest_first = False
+
+                def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    error = ErrorExpr(f"unknown instruction: {instr_str}")
+                    if maybe_dest_first:
+                        s.set_reg_real(
+                            a.reg_ref(0), error, emit_exactly_once=True
+                        )
+                    else:
+                        s.write_statement(ExprStmt(error))
+
+        elif mnemonic in ("mfxer", "mtxer", "mffs", "mtfsf"):
+            # XER/FPSCR access; emit hook calls.
+            if mnemonic in ("mfxer", "mffs"):
+                assert len(args) == 1 and isinstance(args[0], Register)
+                outputs = [args[0]]
+                op = "M2C_MFXER" if mnemonic == "mfxer" else "M2C_MFFS"
+
+                def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    s.set_reg(
+                        a.reg_ref(0),
+                        fn_op(op, [], type=Type.u32()),
+                    )
+            else:
+                # mtxer rS / mtfsf mask, fB
+                assert len(args) >= 1 and isinstance(args[-1], Register)
+                inputs = [args[-1]]
+                src_index = len(args) - 1
+                if mnemonic == "mtxer":
+                    op = "M2C_MTXER"
+
+                    def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                        s.write_statement(
+                            void_fn_op(op, [a.reg(src_index)])
+                        )
+                else:
+                    assert isinstance(args[0], AsmLiteral)
+                    op = "M2C_MTFSF"
+                    mask = args[0].value
+
+                    def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                        s.write_statement(
+                            void_fn_op(
+                                op,
+                                [
+                                    Literal(mask, type=Type.u32()),
+                                    a.reg(src_index),
+                                ],
+                            )
+                        )
+
+        elif mnemonic in ("mfcr", "mtcrf", "mcrf"):
+            # CR moves; emit hook calls.
+            if mnemonic == "mfcr":
+                assert len(args) == 1 and isinstance(args[0], Register)
+                outputs = [args[0]]
+
+                def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    s.set_reg(
+                        a.reg_ref(0),
+                        fn_op("M2C_MFCR", [], type=Type.u32()),
+                    )
+            elif mnemonic == "mtcrf":
+                assert len(args) == 2 and isinstance(args[1], Register)
+                assert isinstance(args[0], AsmLiteral)
+                mask = args[0].value
+                inputs = [args[1]]
+
+                def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    s.write_statement(
+                        void_fn_op(
+                            "M2C_MTCRF",
+                            [Literal(mask, type=Type.u32()), a.reg(1)],
+                        )
+                    )
+            else:
+                # mcrf copies a CR field; fields are not tracked as values.
+                assert len(args) == 2
+                assert all(isinstance(arg, Register) for arg in args)
+                fields = []
+                for arg in args:
+                    assert isinstance(arg, Register)
+                    name = arg.register_name
+                    assert name.startswith("cr") and name[2:].isdigit()
+                    fields.append(int(name[2:]))
+
+                def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    s.write_statement(
+                        void_fn_op(
+                            "M2C_MCRF",
+                            [Literal(fields[0]), Literal(fields[1])],
+                        )
+                    )
+
+        elif mnemonic.startswith("ps_"):
+            # Paired-single SIMD; emit M2C_PS_* hook calls. psq_l/st above.
+            assert args and isinstance(args[0], Register)
+            assert all(isinstance(r, Register) for r in args)
+            outputs = [args[0]]
+            inputs = [r for r in args[1:] if isinstance(r, Register)]
+            op = "M2C_PS_" + mnemonic[3:].upper()
+
+            def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                s.set_reg(
+                    a.reg_ref(0),
+                    fn_op(op, [a.reg(i) for i in range(1, len(args))], type=Type.f64()),
+                )
+
         else:
             # If the mnemonic is unsupported, guess if it is destination-first
             if args and isinstance(args[0], Register):
@@ -1492,6 +1854,7 @@ class PpcArch(Arch):
     ]
 
     asm_patterns = [
+        FcmpuCrorSoPattern(),
         FcmpoCrorPattern(),
         MfcrPattern(),
         TailCallPattern(),
@@ -1511,6 +1874,14 @@ class PpcArch(Arch):
         # For now, we can ignore them (and later use them to help in function_abi)
         "crclr",
         "crset",
+        # Cache hints; dcbz is not a hint and is not ignored.
+        "dcbt",
+        "dcbst",
+        "dcbtst",
+        "dcbf",
+        "dcbi",
+        "icbi",
+        "icbt",
     }
 
     instrs_store: StoreInstrMap = {
@@ -1525,7 +1896,7 @@ class PpcArch(Arch):
         "stfd": lambda a: make_store(a, type=Type.f64()),
         "stfsx": lambda a: make_storex(a, type=Type.f32()),
         "stfdx": lambda a: make_storex(a, type=Type.f64()),
-        "psq_st": lambda a: None,
+        "psq_st": lambda a: make_store(a, type=Type.f64()),
     }
     instrs_store_update: StoreInstrMap = {
         "stbu": lambda a: make_store(a, type=Type.int_of_size(8)),
@@ -1555,7 +1926,7 @@ class PpcArch(Arch):
         "lfd": lambda a: handle_load(a, type=Type.f64()),
         "lfsx": lambda a: handle_loadx(a, type=Type.f32()),
         "lfdx": lambda a: handle_loadx(a, type=Type.f64()),
-        "psq_l": lambda a: ErrorExpr("psq_l unimplemented"),
+        "psq_l": lambda a: handle_load(a, type=Type.f64()),
     }
     instrs_load_update: InstrMap = {
         "lbau": lambda a: handle_load(a, type=Type.s8()),
@@ -1784,6 +2155,13 @@ class PpcArch(Arch):
         ),
         "fcmpo.gte.fictive": lambda a, op: BinaryOp.fcmp(
             a.reg(1), op if op != "==" else ">=", a.reg(2)
+        ),
+        # fcmpo.so.{lte, gte}.fictive: the fcmpu; cror idiom folded to >= / <=.
+        "fcmpo.so.gte.fictive": lambda a, op: BinaryOp.fcmp(
+            a.reg(1), ">=", a.reg(2)
+        ),
+        "fcmpo.so.lte.fictive": lambda a, op: BinaryOp.fcmp(
+            a.reg(1), "<=", a.reg(2)
         ),
     }
 

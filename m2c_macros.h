@@ -63,6 +63,40 @@ typedef s64 M2C_UNK64;
 #define M2C_STORE_GBR(a)
 #define M2C_STORE_VBR(a)
 
+/* PowerPC special purpose register access (mfspr/mtspr). */
+#define M2C_MFSPR(spr) (0)
+#define M2C_MTSPR(spr, val) ((void)(spr), (void)(val))
+
+/* PowerPC condition register access (mfcr/mtcrf/mcrf). */
+#define M2C_MFCR() (0)
+#define M2C_MTCRF(mask, val) ((void)(mask), (void)(val))
+#define M2C_MCRF(dst, src) ((void)(dst), (void)(src))
+
+/* Gekko paired-single (ps_*) SIMD arithmetic. */
+#define M2C_PS_ADD(a, b) (0.0)
+#define M2C_PS_SUB(a, b) (0.0)
+#define M2C_PS_MUL(a, b) (0.0)
+#define M2C_PS_DIV(a, b) (0.0)
+#define M2C_PS_MR(a) (a)
+#define M2C_PS_NEG(a) (0.0)
+#define M2C_PS_RSQRTE(a) (0.0)
+#define M2C_PS_MULS0(a, b) (0.0)
+#define M2C_PS_MADD(a, b, c) (0.0)
+#define M2C_PS_MADDS0(a, b, c) (0.0)
+#define M2C_PS_MADDS1(a, b, c) (0.0)
+#define M2C_PS_SUM0(a, b, c) (0.0)
+#define M2C_PS_SUM1(a, b, c) (0.0)
+#define M2C_PS_MERGE00(a, b) (0.0)
+#define M2C_PS_MERGE01(a, b) (0.0)
+#define M2C_PS_MERGE10(a, b) (0.0)
+#define M2C_PS_MERGE11(a, b) (0.0)
+
 #define M2C_CMP_STR(a, b) (0)
+
+/* PowerPC XER / FPSCR access (mfxer/mtxer, mffs/mtfsf). */
+#define M2C_MFXER() (0)
+#define M2C_MTXER(val) ((void)(val))
+#define M2C_MFFS() (0)
+#define M2C_MTFSF(mask, val) ((void)(mask), (void)(val))
 
 #endif
