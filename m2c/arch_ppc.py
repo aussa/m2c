@@ -2415,10 +2415,14 @@ class PpcArch(Arch):
         assert loc.reg is not None
         reg_name = loc.reg.register_name
         if reg_name.startswith("r"):
-            return f"arg{int(reg_name[1:]) - 3}"
-        if reg_name.startswith("f"):
-            return f"farg{int(reg_name[1:]) - 1}"
-        # Non-ABI register used as an implicit function input.
+            index = int(reg_name[1:]) - 3
+            if index >= 0:
+                return f"arg{index}"
+        elif reg_name.startswith("f"):
+            index = int(reg_name[1:]) - 1
+            if index >= 0:
+                return f"farg{index}"
+        # Non-ABI register (e.g. f0) used as an implicit function input.
         return f"arg_{reg_name}"
 
     # Duplicated by MipseeArch.function_abi
