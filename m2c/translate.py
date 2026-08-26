@@ -1453,7 +1453,24 @@ class FuncCall(Expression):
         # TODO: The function type may have a different number of params than it had
         # when the FuncCall was created. Should we warn that there may be the wrong
         # number of arguments at this callsite?
-        args = ", ".join(format_expr(arg, fmt) for arg in self.args)
+        arg_strs = []
+        params = fn_sig.params if fn_sig is not None else []
+        for i, arg in enumerate(self.args):
+            # An int expression can be unified into a pointer-typed param before
+            # the param resolves (`int` -> `intptr` -> `T *`), leaving the call
+            # to pass an int where a pointer is expected. Re-cast int arithmetic
+            # (`a + 4` of non-pointer operands) to the param's pointer type.
+            if i < len(params) and params[i].type.is_pointer():
+                inner = late_unwrap(arg)
+                if (
+                    isinstance(inner, BinaryOp)
+                    and inner.op in ("+", "-")
+                    and not inner.left.type.is_pointer_or_array()
+                    and not inner.right.type.is_pointer_or_array()
+                ):
+                    arg = Cast(arg, params[i].type, reinterpret=True, silent=False)
+            arg_strs.append(format_expr(arg, fmt))
+        args = ", ".join(arg_strs)
         return f"{target.format(fmt)}({args})"
 
 
