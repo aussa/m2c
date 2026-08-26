@@ -522,7 +522,9 @@ class StackInfo:
             if store:
                 self.weak_stack_var_types[location] = field_type
 
-            return LocalVar(location, type=field_type, path=field_path)
+            var = LocalVar(location, type=field_type, path=field_path)
+            self.add_local_var(var)
+            return var
 
     def maybe_get_register_var(self, reg: Register) -> Optional[Var]:
         return self.reg_vars.get(reg)
