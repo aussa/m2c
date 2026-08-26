@@ -817,10 +817,6 @@ class PpcArch(Arch):
             for r in [
                 "r0",
                 "f0",
-                "cr0_gt",
-                "cr0_lt",
-                "cr0_eq",
-                "cr0_so",
                 "ctr",
             ]
         ]
@@ -1780,21 +1776,27 @@ class PpcArch(Arch):
                         )
                     )
             else:
-                # mcrf copies a CR field; fields are not tracked as values.
+                # mcrf crfD, crfS: copy crS's bits to crD, so a comparison
+                # saved in a callee-saved field survives later clobbering.
                 assert len(args) == 2
                 assert all(isinstance(arg, Register) for arg in args)
-                fields = []
-                for arg in args:
-                    assert isinstance(arg, Register)
-                    name = arg.register_name
-                    assert name.startswith("cr") and name[2:].isdigit()
-                    fields.append(int(name[2:]))
+                dst_bits = cr_field_bits(args[0])
+                src_bits = cr_field_bits(args[1])
+                inputs = src_bits
+                outputs = dst_bits
+                dst_field = int(args[0].register_name[2:])
+                src_field = int(args[1].register_name[2:])
 
                 def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                    for dst, src in zip(dst_bits, src_bits):
+                        s.set_reg(dst, a.regs[src])
                     s.write_statement(
                         void_fn_op(
                             "M2C_MCRF",
-                            [Literal(fields[0]), Literal(fields[1])],
+                            [
+                                Literal(dst_field, type=Type.u32()),
+                                Literal(src_field, type=Type.u32()),
+                            ],
                         )
                     )
 
